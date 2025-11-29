@@ -108,10 +108,10 @@ A simple cross-platform GUI application to quickly toggle your Tailscale exit no
 
 2. **Configure your exit node**
    
-   Copy and edit `config.macos.json` to `config.json`:
+   Copy and edit `config.macos.json` to `config.json` (the CLI path `tailscale` usually works best on macOS):
    ```json
    {
-       "tailscale_exe": "/Applications/Tailscale.app/Contents/MacOS/Tailscale",
+       "tailscale_exe": "tailscale",
        "exit_node_ip": "100.64.10.100"
    }
    ```
@@ -134,13 +134,14 @@ A simple cross-platform GUI application to quickly toggle your Tailscale exit no
    - Install dependencies (rumps, py2app)
    - Build `Exit Node Toggle.app`
    - Optionally create a DMG installer
+   - Bake in the working Tailscale CLI path (prefers `tailscale` on PATH) and default exit node IP
 
 2. **The app will be in** `dist/Exit Node Toggle.app`
 
-3. **Configure your exit node IP** in:
-   ```
-   dist/Exit Node Toggle.app/Contents/Resources/config.json
-   ```
+3. **Configuration inside the app bundle**  
+   - Tailscale binary: auto-detected during build (CLI preferred).  
+   - Exit node IP: defaults to `100.64.10.100` (override by setting `EXIT_NODE_IP` before running the build script).  
+   - File: `dist/Exit Node Toggle.app/Contents/Resources/config.json`
 
 ### macOS Usage
 

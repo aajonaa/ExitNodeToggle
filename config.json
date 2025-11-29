@@ -1,5 +1,5 @@
 {
-    "tailscale_exe": "C:\\Program Files\\Tailscale\\tailscale.exe",
+    "tailscale_exe": "/Applications/Tailscale.app/Contents/MacOS/Tailscale",
     "exit_node_ip": "100.64.10.100"
 }
 
