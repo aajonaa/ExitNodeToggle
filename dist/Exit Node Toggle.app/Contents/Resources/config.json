@@ -1,4 +1,0 @@
-{
-    "tailscale_exe": "/usr/local/bin/tailscale",
-    "exit_node_ip": "100.64.10.100"
-}
