@@ -1,0 +1,5 @@
+{
+    "tailscale_exe": "/Applications/Tailscale.app/Contents/MacOS/Tailscale",
+    "exit_node_ip": "YOUR_EXIT_NODE_IP_HERE"
+}
+
