@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Exit Node Toggle
+Comment=Toggle Tailscale Exit Node
+Exec=/usr/bin/exitnodetoggle
+Icon=exitnodetoggle
+Terminal=false
+Categories=Network;Utility;
