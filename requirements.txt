@@ -1,10 +1,13 @@
 # ===========================================
-# Windows Dependencies
+# Shared Dependencies (Windows & Linux)
 # ===========================================
-# System tray support (Windows)
+# System tray support
 pystray>=0.19.0
 pillow>=10.0.0
 
+# ===========================================
+# Windows Dependencies
+# ===========================================
 # For building EXE (Windows)
 pyinstaller>=6.0.0
 
