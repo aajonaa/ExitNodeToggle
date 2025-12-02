@@ -1,4 +1,1 @@
-{
-  "tailscale_exe": "tailscale",
-  "exit_node_ip": "100.64.10.100"
-}
+/home/jona/github/ExitNodeToggle/config.json

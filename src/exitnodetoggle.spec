@@ -5,7 +5,7 @@ a = Analysis(
     ['main_linux.py'],
     pathex=[],
     binaries=[],
-    datas=[],
+    datas=[('config.json', '.')],
     hiddenimports=['PyQt5'],
     hookspath=[],
     hooksconfig={},

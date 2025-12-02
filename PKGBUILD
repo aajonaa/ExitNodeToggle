@@ -8,8 +8,8 @@ url="https://github.com/yourusername/ExitNodeToggle"
 license=('MIT')
 depends=('tailscale' 'qt5-base' 'tk' 'glibc')
 makedepends=('python' 'python-pip' 'python-virtualenv' 'binutils')
-source=('main_linux.py' 'requirements.txt' 'config.linux.json' 'icon-source.svg' 'exitnodetoggle.desktop')
-sha256sums=('SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP')
+source=('main_linux.py' 'requirements.txt' 'config.linux.json' 'config.json' 'icon-source.svg' 'exitnodetoggle.desktop')
+sha256sums=('SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP')
 
 build() {
     echo "Setting up virtual environment for build..."
@@ -23,7 +23,7 @@ build() {
     echo "Building binary..."
     # Note: We don't bundle config.json inside the binary for the system package
     # We will install a default config to /etc/ or let the app create one/warn user
-    pyinstaller --onefile --windowed --hidden-import PyQt5 --name "exitnodetoggle" main_linux.py
+    pyinstaller --onefile --windowed --hidden-import PyQt5 --name "exitnodetoggle" --add-data "config.json:." main_linux.py
 }
 
 package() {
