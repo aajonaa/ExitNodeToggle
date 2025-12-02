@@ -2,7 +2,7 @@
 
 
 a = Analysis(
-    ['main.py'],
+    ['main_linux.py'],
     pathex=[],
     binaries=[],
     datas=[('config.json', '.')],

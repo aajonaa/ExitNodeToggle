@@ -60,14 +60,26 @@ def log(msg, level=logging.INFO):
 
 class Config:
     def __init__(self) -> None:
-        base_dir = Path(__file__).parent.absolute()
+        # Determine search paths
+        # Priority 1: XDG Config
         xdg_config = Path.home() / ".config" / "exitnodetoggle" / "config.json"
         
-        candidate_paths = [
-            xdg_config,
-            base_dir / "config.linux.json",
-            base_dir / "config.json",
-        ]
+        candidate_paths = [xdg_config]
+
+        if getattr(sys, 'frozen', False):
+            # Running as compiled executable
+            # Priority 2: Next to the executable
+            exe_dir = Path(sys.executable).parent
+            candidate_paths.append(exe_dir / "config.json")
+            
+            # Priority 3: Bundled internal config (fallback)
+            if hasattr(sys, '_MEIPASS'):
+                candidate_paths.append(Path(sys._MEIPASS) / "config.json")
+        else:
+            # Running as script
+            base_dir = Path(__file__).parent.absolute()
+            candidate_paths.append(base_dir / "config.linux.json")
+            candidate_paths.append(base_dir / "config.json")
 
         self.config_path: Path | None = None
         for p in candidate_paths:
@@ -76,10 +88,15 @@ class Config:
                 break
 
         if self.config_path is None:
-            msg = "No configuration file found. Please create config.json."
+            msg = f"No configuration file found.\nSearched:\n" + "\n".join(str(p) for p in candidate_paths)
             log(msg, logging.CRITICAL)
-            print(msg)
-            sys.exit(1)
+            # Try to show a UI alert if possible, though msg_queue might not be ready
+            print(msg) 
+            # Fallback defaults
+            self.tailscale_exe = "tailscale"
+            self.exit_node_ip = ""
+            self.valid = False
+            return
 
         try:
             with open(self.config_path, "r", encoding="utf-8") as f:
@@ -87,7 +104,11 @@ class Config:
             log(f"Loaded config from {self.config_path}")
         except Exception as e:
             log(f"Failed to parse config: {e}", logging.CRITICAL)
-            sys.exit(1)
+            # Fallback defaults
+            self.tailscale_exe = "tailscale"
+            self.exit_node_ip = ""
+            self.valid = False
+            return
 
         self.tailscale_exe: str = data.get("tailscale_exe", "tailscale")
         self.exit_node_ip: str = data.get("exit_node_ip", "")
@@ -154,10 +175,18 @@ class TailscaleController:
     
     def _run(self, args):
         cmd = [self.config.tailscale_exe] + args
-        # log(f"Running: {cmd}") # Too verbose
-        return subprocess.run(
-            cmd, capture_output=True, text=True, check=False, timeout=10
-        )
+        log(f"Exec: {cmd}", logging.DEBUG)
+        try:
+            return subprocess.run(
+                cmd, capture_output=True, text=True, check=False, timeout=10
+            )
+        except FileNotFoundError:
+            log(f"Binary not found: {self.config.tailscale_exe}", logging.ERROR)
+            # Return dummy object with error code
+            return subprocess.CompletedProcess(cmd, 127, "", "Binary not found")
+        except Exception as e:
+            log(f"Exec failed: {e}", logging.ERROR)
+            return subprocess.CompletedProcess(cmd, 1, "", str(e))
 
     def get_status(self) -> tuple[bool, str | None]:
         try:
@@ -220,8 +249,9 @@ def generate_icons(output_dir: Path):
         on_path = output_dir / "icon_on.png"
         off_path = output_dir / "icon_off.png"
         
-        make_icon("00d9a5", on_path)
-        make_icon("e94560", off_path)
+        # Colors: Red (#e94560) for ON, Grey (#808080) for OFF
+        make_icon("e94560", on_path)
+        make_icon("808080", off_path)
         
         return str(on_path), str(off_path)
     except ImportError:

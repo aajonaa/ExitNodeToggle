@@ -1,23 +1,22 @@
 # ===========================================
-# Shared Dependencies (Windows & Linux)
+# Shared Dependencies
 # ===========================================
-# System tray support
 pystray>=0.19.0
 pillow>=10.0.0
 
 # ===========================================
 # Windows Dependencies
 # ===========================================
-# For building EXE (Windows)
+# For building EXE
 pyinstaller>=6.0.0
 
 # ===========================================
 # macOS Dependencies
 # ===========================================
-# Menu bar support (macOS) - install on macOS only
-# pip install rumps
 rumps>=0.4.0; sys_platform == "darwin"
-
-# For building .app bundle (macOS)
-# pip install py2app
 py2app>=0.28.0; sys_platform == "darwin"
+
+# ===========================================
+# Linux Dependencies
+# ===========================================
+PyQt5>=5.15.0; sys_platform == "linux"
