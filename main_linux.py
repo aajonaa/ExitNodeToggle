@@ -1,7 +1,7 @@
 """
 Tailscale Exit Node Toggle App - Linux (GUI Version)
 A Tkinter-based GUI application to toggle Tailscale exit node on/off on Linux.
-Includes optional system tray support and handles backend compatibility.
+Uses Native GTK3/AppIndicator for the System Tray.
 """
 
 import subprocess
@@ -14,60 +14,51 @@ import sys
 import os
 import logging
 import shutil
+import time
+import signal
+from multiprocessing import Process, Queue
 
-# --- Dependency Checks -------------------------------------------------------
-
-# System tray support (pystray + PIL)
-try:
-    import pystray
-    from PIL import Image, ImageDraw
-    HAS_PYSTRAY = True
-except ImportError:
-    HAS_PYSTRAY = False
-    print("Warning: pystray and/or pillow not found. Tray support disabled.")
-
-# AppIndicator support (Critical for interactive tray on Gnome/KDE/Arch)
-HAS_APP_INDICATOR = False
-try:
-    import gi
-    gi.require_version('AppIndicator3', '0.1')
-    from gi.repository import AppIndicator3
-    HAS_APP_INDICATOR = True
-except (ImportError, ValueError):
-    pass
-
-
-# --- Logging & Constants -----------------------------------------------------
+# --- 1. Constants & Logging --------------------------------------------------
 
 APP_NAME = "ExitNodeToggle"
 LOG_DIR = Path.home() / ".local" / "state" / "exitnodetoggle"
 LOG_FILE = LOG_DIR / "app.log"
+TRAY_LOG_FILE = LOG_DIR / "tray.log"
 
 try:
     LOG_DIR.mkdir(parents=True, exist_ok=True)
 except Exception:
     pass
 
-logging.basicConfig(
-    filename=str(LOG_FILE),
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S",
-)
-# Console handler
-console = logging.StreamHandler(sys.stdout)
-console.setLevel(logging.INFO)
-logging.getLogger().addHandler(console)
+def setup_logging(filename, name="App"):
+    # Remove existing handlers
+    root = logging.getLogger()
+    if root.handlers:
+        for handler in root.handlers:
+            root.removeHandler(handler)
+            
+    logging.basicConfig(
+        filename=str(filename),
+        level=logging.INFO,
+        format=f"%(asctime)s [{name}] %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
+    # Add console handler
+    console = logging.StreamHandler(sys.stdout)
+    console.setLevel(logging.INFO)
+    formatter = logging.Formatter(f"%(asctime)s [{name}] %(message)s")
+    console.setFormatter(formatter)
+    logging.getLogger().addHandler(console)
+
+setup_logging(LOG_FILE, "Main")
 
 def log(msg, level=logging.INFO):
     logging.log(level, msg)
 
 
-# --- Configuration -----------------------------------------------------------
+# --- 2. Configuration Class --------------------------------------------------
 
 class Config:
-    """Load and manage configuration for Linux."""
-
     def __init__(self) -> None:
         base_dir = Path(__file__).parent.absolute()
         xdg_config = Path.home() / ".config" / "exitnodetoggle" / "config.json"
@@ -87,7 +78,7 @@ class Config:
         if self.config_path is None:
             msg = "No configuration file found. Please create config.json."
             log(msg, logging.CRITICAL)
-            messagebox.showerror("Configuration Error", msg)
+            print(msg)
             sys.exit(1)
 
         try:
@@ -104,23 +95,17 @@ class Config:
         self.valid = True
         if not self.exit_node_ip or self.exit_node_ip == "YOUR_EXIT_NODE_IP_HERE":
             self.valid = False
-            messagebox.showwarning(
-                "Configuration Required",
-                "Please set your exit node IP in config.json"
-            )
+            log("Configuration Required: Please set your exit node IP.", logging.WARNING)
 
 
-# --- Startup Manager (Linux XDG Autostart) -----------------------------------
+# --- 3. Startup Manager ------------------------------------------------------
 
 class StartupManager:
-    """Manage Linux startup via ~/.config/autostart/."""
-    
     AUTOSTART_DIR = Path.home() / ".config" / "autostart"
     DESKTOP_FILE = AUTOSTART_DIR / f"{APP_NAME}.desktop"
     
     @staticmethod
     def get_exe_cmd() -> str:
-        """Get the command to run the app."""
         python_exe = sys.executable
         script_path = str(Path(__file__).absolute())
         return f'{python_exe} "{script_path}"'
@@ -133,7 +118,6 @@ class StartupManager:
     def enable() -> bool:
         try:
             StartupManager.AUTOSTART_DIR.mkdir(parents=True, exist_ok=True)
-            
             cmd = StartupManager.get_exe_cmd()
             content = f"""[Desktop Entry]
 Type=Application
@@ -162,17 +146,15 @@ Categories=Network;Utility;
             return False
 
 
-# --- Tailscale Controller ----------------------------------------------------
+# --- 4. Tailscale Controller -------------------------------------------------
 
 class TailscaleController:
-    """Handles Tailscale exit node operations."""
-    
     def __init__(self, config: Config):
         self.config = config
     
     def _run(self, args):
         cmd = [self.config.tailscale_exe] + args
-        log(f"Running: {cmd}")
+        # log(f"Running: {cmd}") # Too verbose
         return subprocess.run(
             cmd, capture_output=True, text=True, check=False, timeout=10
         )
@@ -213,281 +195,310 @@ class TailscaleController:
             return False
 
 
-# --- UI & App ----------------------------------------------------------------
+# --- 5. Icon Generation ------------------------------------------------------
 
-def create_tray_icon(color_hex: str) -> "Image.Image":
-    """Create a simple colored circle icon."""
-    size = 64
-    # Hex to RGB
-    color_hex = color_hex.lstrip('#')
-    rgb = tuple(int(color_hex[i:i+2], 16) for i in (0, 2, 4))
-    
-    image = Image.new('RGBA', (size, size), (0, 0, 0, 0))
-    draw = ImageDraw.Draw(image)
-    
-    # Outer circle
-    draw.ellipse([2, 2, size-2, size-2], fill=(26, 26, 46), outline=(58, 58, 94), width=2)
-    # Inner circle
-    m = 16
-    draw.ellipse([m, m, size-m, size-m], fill=rgb)
-    return image
+def generate_icons(output_dir: Path):
+    """Generate On/Off PNG icons using Pillow."""
+    try:
+        from PIL import Image, ImageDraw
+        
+        def make_icon(color_hex, path):
+            size = 64
+            color_hex = color_hex.lstrip('#')
+            rgb = tuple(int(color_hex[i:i+2], 16) for i in (0, 2, 4))
+            
+            image = Image.new('RGBA', (size, size), (0, 0, 0, 0))
+            draw = ImageDraw.Draw(image)
+            
+            # Draw simple circle
+            draw.ellipse([2, 2, size-2, size-2], fill=(26, 26, 46), outline=(58, 58, 94), width=2)
+            m = 16
+            draw.ellipse([m, m, size-m, size-m], fill=rgb)
+            
+            image.save(path, "PNG")
+            
+        on_path = output_dir / "icon_on.png"
+        off_path = output_dir / "icon_off.png"
+        
+        make_icon("00d9a5", on_path)
+        make_icon("e94560", off_path)
+        
+        return str(on_path), str(off_path)
+    except ImportError:
+        log("Pillow not found. Icons cannot be generated.", logging.ERROR)
+        return None, None
 
+
+# --- 6. Tray Process (Native GTK) --------------------------------------------
+
+def run_tray_process(msg_queue):
+    """
+    Runs the system tray icon in a separate process using pure GTK+AppIndicator.
+    """
+    setup_logging(TRAY_LOG_FILE, "Tray")
+    logging.info("Tray process initialized.")
+
+    # Import GTK
+    try:
+        import gi
+        gi.require_version('Gtk', '3.0')
+        from gi.repository import Gtk, GLib
+        
+        APP_INDICATOR = None
+        try:
+            gi.require_version('AppIndicator3', '0.1')
+            from gi.repository import AppIndicator3
+            APP_INDICATOR = AppIndicator3
+            logging.info("Using AppIndicator3")
+        except:
+            try:
+                gi.require_version('AyatanaAppIndicator3', '0.1')
+                from gi.repository import AyatanaAppIndicator3
+                APP_INDICATOR = AyatanaAppIndicator3
+                logging.info("Using AyatanaAppIndicator3")
+            except:
+                logging.error("No AppIndicator library found. Tray cannot start.")
+                return
+    except Exception as e:
+        logging.critical(f"Failed to import GTK/Gi: {e}")
+        return
+
+    try:
+        # Setup Logic
+        config = Config()
+        tailscale = TailscaleController(config)
+        
+        # Generate Icons
+        icon_on, icon_off = generate_icons(LOG_DIR)
+        if not icon_on:
+            logging.error("Failed to generate icons. Exiting.")
+            return
+            
+        logging.info(f"Icons: {icon_on}, {icon_off}")
+
+        # Create Indicator
+        # ID must be unique
+        indicator = APP_INDICATOR.Indicator.new(
+            "tailscale-exit-node-toggle",
+            icon_off,
+            APP_INDICATOR.IndicatorCategory.APPLICATION_STATUS
+        )
+        indicator.set_status(APP_INDICATOR.IndicatorStatus.ACTIVE)
+        
+        # Build Menu
+        menu = Gtk.Menu()
+        
+        item_show = Gtk.MenuItem(label="Show Window")
+        item_show.connect("activate", lambda _: msg_queue.put("show"))
+        menu.append(item_show)
+        
+        item_toggle = Gtk.MenuItem(label="Toggle Exit Node")
+        
+        def on_toggle(_):
+            logging.info("Toggle clicked.")
+            # Run in thread
+            threading.Thread(target=do_toggle, daemon=True).start()
+            
+        def do_toggle():
+            # Optimistically toggle based on last known or check?
+            # Let's just toggle based on check
+            active, _ = tailscale.get_status()
+            if active:
+                tailscale.disable_exit_node()
+            else:
+                tailscale.enable_exit_node()
+            # Poll loop will update icon
+            # Force immediate check
+            GLib.idle_add(update_icon)
+
+        item_toggle.connect("activate", on_toggle)
+        menu.append(item_toggle)
+        
+        menu.append(Gtk.SeparatorMenuItem())
+        
+        item_quit = Gtk.MenuItem(label="Quit")
+        def on_quit(_):
+            logging.info("Quit clicked.")
+            msg_queue.put("quit")
+            Gtk.main_quit()
+            
+        item_quit.connect("activate", on_quit)
+        menu.append(item_quit)
+        
+        menu.show_all()
+        indicator.set_menu(menu)
+        
+        # Poll Status
+        def update_icon():
+            try:
+                is_active, _ = tailscale.get_status()
+                if is_active:
+                    indicator.set_icon_full(icon_on, "Tailscale ON")
+                else:
+                    indicator.set_icon_full(icon_off, "Tailscale OFF")
+            except Exception as e:
+                logging.error(f"Poll error: {e}")
+            return True # Keep running
+
+        # Poll every 5 seconds
+        GLib.timeout_add_seconds(5, update_icon)
+        # Run once immediately
+        GLib.idle_add(update_icon)
+        
+        # Handle Ctrl+C
+        signal.signal(signal.SIGINT, lambda *args: Gtk.main_quit())
+
+        logging.info("Entering GTK main loop...")
+        Gtk.main()
+        logging.info("GTK main loop exited.")
+
+    except Exception as e:
+        logging.critical(f"Tray crashed: {e}")
+        import traceback
+        logging.critical(traceback.format_exc())
+
+
+# --- 7. Main App (Tkinter) ---------------------------------------------------
 
 class App:
-    """Main application GUI (Tkinter)."""
-    
-    # Theme Colors
-    COLOR_BG = "#1a1a2e"
-    COLOR_CARD = "#16213e"
-    COLOR_ACCENT = "#0f3460"
-    COLOR_ON = "#00d9a5"
-    COLOR_OFF = "#e94560"
-    COLOR_TEXT = "#eaeaea"
-    COLOR_TEXT_DIM = "#8892a0"
-    
-    def __init__(self, root: tk.Tk):
+    def __init__(self, root: tk.Tk, msg_queue):
         self.root = root
+        self.msg_queue = msg_queue
         self.config = Config()
         self.tailscale = TailscaleController(self.config)
         self.is_on = False
-        self.tray_icon = None
-        
-        # Settings
-        self.startup_enabled = tk.BooleanVar(value=StartupManager.is_enabled())
-        
-        # Default minimize behavior:
-        # Only default to True if we are confident the tray works (AppIndicator present)
-        self.minimize_to_tray = tk.BooleanVar(value=HAS_APP_INDICATOR and HAS_PYSTRAY)
         
         self.setup_window()
         self.create_widgets()
-        self.setup_tray()
         
-        # Initial status check
         self.root.after(100, self.refresh_status)
+        self.root.after(100, self.check_queue)
     
     def setup_window(self):
         self.root.title("Exit Node Toggle")
-        self.root.geometry("320x320") # Increased height for extra controls
-        self.root.resizable(False, False)
-        self.root.configure(bg=self.COLOR_BG)
-        
-        # Handle closing -> minimize to tray OR quit
-        self.root.protocol("WM_DELETE_WINDOW", self.on_close_window)
+        self.root.geometry("320x280")
+        self.root.configure(bg="#1a1a2e")
+        self.root.protocol("WM_DELETE_WINDOW", self.on_close)
         
         # Center
         self.root.update_idletasks()
-        sw = self.root.winfo_screenwidth()
-        sh = self.root.winfo_screenheight()
-        x = (sw - 320) // 2
-        y = (sh - 320) // 2
+        x = (self.root.winfo_screenwidth() - 320) // 2
+        y = (self.root.winfo_screenheight() - 280) // 2
         self.root.geometry(f"+{x}+{y}")
 
-    def setup_tray(self):
-        if not HAS_PYSTRAY:
-            return
-        
-        menu = pystray.Menu(
-            pystray.MenuItem("Show Window", self.show_window, default=True),
-            pystray.MenuItem("Toggle Exit Node", self.tray_toggle),
-            pystray.Menu.SEPARATOR,
-            pystray.MenuItem("Quit", self.quit_app)
-        )
-        
-        icon_img = create_tray_icon(self.COLOR_OFF)
-        self.tray_icon = pystray.Icon("ExitNodeToggle", icon_img, "Exit Node: OFF", menu)
-        
-        # Run tray in background thread
-        t = threading.Thread(target=self.tray_icon.run, daemon=True)
-        t.start()
-
-    def update_tray_icon(self):
-        if not self.tray_icon:
-            return
-        
-        color = self.COLOR_ON if self.is_on else self.COLOR_OFF
-        self.tray_icon.icon = create_tray_icon(color)
-        self.tray_icon.title = "Exit Node: ON" if self.is_on else "Exit Node: OFF"
-
-    def on_close_window(self):
-        """Minimize to tray if enabled, otherwise quit."""
-        if self.minimize_to_tray.get() and self.tray_icon:
-            self.root.withdraw()
-            # Show notification hint once
-            if not getattr(self, '_minimized_once', False):
-                log("Minimized to system tray.")
-                self._minimized_once = True
-        else:
-            self.quit_app()
-
-    def show_window(self, icon=None, item=None):
-        """Bring window back."""
-        self.root.after(0, self._restore_window)
-    
-    def _restore_window(self):
-        self.root.deiconify()
-        self.root.lift()
-
-    def tray_toggle(self, icon=None, item=None):
-        """Toggle from tray."""
-        self.root.after(0, self.toggle_node)
-
-    def quit_app(self, icon=None, item=None):
-        if self.tray_icon:
-            self.tray_icon.stop()
-        self.root.quit()
-
     def create_widgets(self):
-        # Styles
-        font_title = ("Sans", 14, "bold")
-        font_main = ("Sans", 10)
-        font_btn = ("Sans", 11, "bold")
-        font_small = ("Sans", 9)
+        bg = "#1a1a2e"
+        card = "#16213e"
+        fg = "#eaeaea"
         
-        container = tk.Frame(self.root, bg=self.COLOR_BG)
-        container.pack(expand=True, fill="both", padx=20, pady=20)
+        tk.Label(self.root, text="🔒 Tailscale Exit Node", font=("Sans", 14, "bold"), 
+                 bg=bg, fg=fg).pack(pady=15)
         
-        # Title
-        tk.Label(container, text="🔒 Tailscale Exit Node", font=font_title, 
-                 bg=self.COLOR_BG, fg=self.COLOR_TEXT).pack(pady=(0, 15))
+        self.status_lbl = tk.Label(self.root, text="Checking...", font=("Sans", 11), bg=card, fg=fg, width=30, pady=10)
+        self.status_lbl.pack(pady=10)
         
-        # Status Card
-        status_frame = tk.Frame(container, bg=self.COLOR_CARD, padx=15, pady=10)
-        status_frame.pack(fill="x", pady=(0, 15))
+        self.btn = tk.Button(self.root, text="Toggle", command=self.on_toggle, 
+                             bg="#0f3460", fg=fg, font=("Sans", 11, "bold"), 
+                             relief="flat", padx=20, pady=10)
+        self.btn.pack(pady=10)
         
-        self.status_dot = tk.Label(status_frame, text="●", font=("Sans", 16), 
-                                   bg=self.COLOR_CARD, fg=self.COLOR_OFF)
-        self.status_dot.pack(side="left")
-        
-        self.status_label = tk.Label(status_frame, text="Checking...", font=font_main,
-                                     bg=self.COLOR_CARD, fg=self.COLOR_TEXT)
-        self.status_label.pack(side="left", padx=(8, 0))
-        
-        # Button
-        self.btn_text = tk.StringVar(value="Loading...")
-        self.toggle_btn = tk.Button(
-            container, textvariable=self.btn_text, command=self.toggle_node,
-            font=font_btn, bg=self.COLOR_ACCENT, fg=self.COLOR_TEXT,
-            activebackground=self.COLOR_CARD, activeforeground=self.COLOR_TEXT,
-            relief="flat", cursor="hand2", height=2, width=25,
-            borderwidth=0
-        )
-        self.toggle_btn.pack()
-        
-        # Info
-        tk.Label(container, text=f"Node: {self.config.exit_node_ip}", font=("Sans", 8),
-                 bg=self.COLOR_BG, fg=self.COLOR_TEXT_DIM).pack(pady=(10, 0))
-        
-        # Separator
-        tk.Frame(container, height=1, bg=self.COLOR_CARD).pack(fill="x", pady=10)
+        self.chk_var = tk.BooleanVar(value=StartupManager.is_enabled())
+        tk.Checkbutton(self.root, text="Start on Login", variable=self.chk_var, 
+                       command=self.toggle_startup, bg=bg, fg=fg, selectcolor=card,
+                       activebackground=bg, activeforeground=fg).pack()
 
-        # Options Label
-        tk.Label(container, text="Options", font=("Sans", 8, "bold"),
-                 bg=self.COLOR_BG, fg=self.COLOR_TEXT_DIM).pack(anchor="w")
-
-        # Startup Checkbox
-        chk_startup = tk.Checkbutton(
-            container, text="Start on Login", variable=self.startup_enabled,
-            command=self.toggle_startup, font=font_small,
-            bg=self.COLOR_BG, fg=self.COLOR_TEXT, selectcolor=self.COLOR_CARD,
-            activebackground=self.COLOR_BG, activeforeground=self.COLOR_TEXT
-        )
-        chk_startup.pack(anchor="w")
-
-        # Minimize to Tray Checkbox
-        chk_tray = tk.Checkbutton(
-            container, text="Close to Tray", variable=self.minimize_to_tray,
-            font=font_small,
-            bg=self.COLOR_BG, fg=self.COLOR_TEXT, selectcolor=self.COLOR_CARD,
-            activebackground=self.COLOR_BG, activeforeground=self.COLOR_TEXT
-        )
-        chk_tray.pack(anchor="w")
-
-        # Warnings/Tips
-        if not HAS_APP_INDICATOR:
-            tip_frame = tk.Frame(container, bg=self.COLOR_BG, pady=5)
-            tip_frame.pack(fill="x")
-            tk.Label(tip_frame, text="⚠ Tray interaction requires:", 
-                     font=("Sans", 7), bg=self.COLOR_BG, fg="#e94560").pack(anchor="w")
-            e = tk.Entry(tip_frame, font=("Sans", 7), bg=self.COLOR_CARD, fg=self.COLOR_TEXT, borderwidth=0)
-            e.insert(0, "sudo pacman -S libappindicator-gtk3")
-            e.config(state="readonly")
-            e.pack(fill="x")
-
-        # Quit Button (Explicit)
-        tk.Button(
-            container, text="Quit Application", command=self.quit_app,
-            font=("Sans", 8), bg=self.COLOR_BG, fg=self.COLOR_TEXT_DIM,
-            activebackground=self.COLOR_BG, activeforeground=self.COLOR_OFF,
-            relief="flat", cursor="hand2", borderwidth=0
-        ).pack(pady=(10, 0), anchor="e")
+        tk.Button(self.root, text="Quit App", command=self.quit_app, bg=bg, fg="#8892a0", 
+                  relief="flat", bd=0, cursor="hand2").pack(side="bottom", pady=10)
 
     def refresh_status(self):
         is_active, _ = self.tailscale.get_status()
-        if is_active != self.is_on:
-            self.is_on = is_active
-            self.update_ui()
+        self.is_on = is_active
         
-        # Poll every 5 seconds
+        if is_active:
+            self.status_lbl.config(text="✅ Connected via Exit Node", fg="#00d9a5")
+            self.btn.config(text="Disable Exit Node", bg="#2d4a3e")
+        else:
+            self.status_lbl.config(text="⚪ Direct Connection", fg="#e94560")
+            self.btn.config(text="Enable Exit Node", bg="#0f3460")
+            
         self.root.after(5000, self.refresh_status)
 
-    def update_ui(self):
-        if self.is_on:
-            self.status_dot.config(fg=self.COLOR_ON)
-            self.status_label.config(text="Connected via Exit Node")
-            self.btn_text.set("⏹  Disable Exit Node")
-            self.toggle_btn.config(bg="#2d4a3e")
-        else:
-            self.status_dot.config(fg=self.COLOR_OFF)
-            self.status_label.config(text="Direct Connection")
-            self.btn_text.set("▶  Enable Exit Node")
-            self.toggle_btn.config(bg=self.COLOR_ACCENT)
-        
-        self.update_tray_icon()
-
-    def toggle_node(self):
-        self.toggle_btn.config(state="disabled")
-        self.btn_text.set("Working...")
+    def on_toggle(self):
+        self.btn.config(state="disabled", text="Working...")
         self.root.update()
-        
-        # Run in thread to keep UI responsive
-        threading.Thread(target=self._toggle_worker, daemon=True).start()
-    
-    def _toggle_worker(self):
-        if self.is_on:
-            success = self.tailscale.disable_exit_node()
-        else:
-            success = self.tailscale.enable_exit_node()
-        
-        # Schedule UI update on main thread
-        self.root.after(0, lambda: self._toggle_complete(success))
+        threading.Thread(target=self._worker, daemon=True).start()
 
-    def _toggle_complete(self, success):
-        if success:
-            self.is_on = not self.is_on
-            self.update_ui()
+    def _worker(self):
+        if self.is_on:
+            self.tailscale.disable_exit_node()
         else:
-            messagebox.showerror("Error", "Operation failed. Check logs/tailscale.")
-            self.refresh_status()
-        self.toggle_btn.config(state="normal")
+            self.tailscale.enable_exit_node()
+        self.root.after(0, lambda: self.btn.config(state="normal"))
+        self.root.after(0, self.refresh_status)
 
     def toggle_startup(self):
-        if self.startup_enabled.get():
-            if not StartupManager.enable():
-                self.startup_enabled.set(False)
+        if self.chk_var.get():
+            StartupManager.enable()
         else:
-            if not StartupManager.disable():
-                self.startup_enabled.set(True)
+            StartupManager.disable()
+
+    def on_close(self):
+        # Minimize to tray
+        self.root.withdraw()
+
+    def show_window(self):
+        self.root.deiconify()
+        self.root.lift()
+
+    def quit_app(self):
+        self.root.quit()
+
+    def check_queue(self):
+        try:
+            while not self.msg_queue.empty():
+                msg = self.msg_queue.get_nowait()
+                if msg == "show":
+                    self.show_window()
+                elif msg == "quit":
+                    self.quit_app()
+        except:
+            pass
+        self.root.after(500, self.check_queue)
 
 
 def main():
+    msg_queue = Queue()
+    
+    # Check if we have tray capability
+    has_tray = False
+    try:
+        import gi
+        gi.require_version('AppIndicator3', '0.1')
+        has_tray = True
+    except:
+        try:
+            import gi
+            gi.require_version('AyatanaAppIndicator3', '0.1')
+            has_tray = True
+        except:
+            pass
+    
+    tray_process = None
+    if has_tray:
+        tray_process = Process(target=run_tray_process, args=(msg_queue,))
+        tray_process.start()
+    else:
+        print("Tray support missing (AppIndicator3). Running window-only.")
+
     root = tk.Tk()
-    app = App(root)
+    app = App(root, msg_queue)
     try:
         root.mainloop()
     except KeyboardInterrupt:
-        app.quit_app()
-
+        pass
+    finally:
+        if tray_process and tray_process.is_alive():
+            tray_process.terminate()
 
 if __name__ == "__main__":
     main()
