@@ -19,7 +19,7 @@ pip install pyinstaller
 # 3. Build
 echo "Running PyInstaller..."
 # --add-data format for Linux is source:dest
-pyinstaller --onefile --windowed --name "ExitNodeToggle" --add-data "config.json:." main_linux.py
+pyinstaller --onefile --windowed --hidden-import PyQt5 --name "ExitNodeToggle" --add-data "config.json:." main_linux.py
 
 echo "--- Build Complete ---"
 echo "Executable is located at: dist/ExitNodeToggle"

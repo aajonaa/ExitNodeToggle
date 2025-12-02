@@ -1,7 +1,7 @@
 """
 Tailscale Exit Node Toggle App - Linux (GUI Version)
 A Tkinter-based GUI application to toggle Tailscale exit node on/off on Linux.
-Uses Native GTK3/AppIndicator for the System Tray.
+Uses PyQt5 for the System Tray.
 """
 
 import subprocess
@@ -492,26 +492,20 @@ class App:
 def main():
     msg_queue = Queue()
     
-    # Check if we have tray capability
+    # Check if we have tray capability (PyQt5)
     has_tray = False
     try:
-        import gi
-        gi.require_version('AppIndicator3', '0.1')
+        import PyQt5.QtWidgets
         has_tray = True
-    except:
-        try:
-            import gi
-            gi.require_version('AyatanaAppIndicator3', '0.1')
-            has_tray = True
-        except:
-            pass
+    except ImportError:
+        pass
     
     tray_process = None
     if has_tray:
         tray_process = Process(target=run_tray_process, args=(msg_queue,))
         tray_process.start()
     else:
-        print("Tray support missing (AppIndicator3). Running window-only.")
+        print("Tray support missing (PyQt5). Running window-only.")
 
     root = tk.Tk()
     app = App(root, msg_queue)

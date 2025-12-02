@@ -6,9 +6,9 @@ xdata = pkgtype=pkg
 pkgver = 1.0.0-1
 pkgdesc = Tailscale Exit Node Toggle GUI
 url = https://github.com/yourusername/ExitNodeToggle
-builddate = 1764649912
+builddate = 1764662704
 packager = Unknown Packager
-size = 93646458
+size = 93646330
 arch = x86_64
 license = MIT
 depend = tailscale

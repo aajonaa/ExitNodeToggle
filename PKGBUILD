@@ -23,7 +23,7 @@ build() {
     echo "Building binary..."
     # Note: We don't bundle config.json inside the binary for the system package
     # We will install a default config to /etc/ or let the app create one/warn user
-    pyinstaller --onefile --windowed --name "exitnodetoggle" main_linux.py
+    pyinstaller --onefile --windowed --hidden-import PyQt5 --name "exitnodetoggle" main_linux.py
 }
 
 package() {
