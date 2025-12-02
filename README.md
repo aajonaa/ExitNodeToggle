@@ -73,6 +73,10 @@ A simple cross-platform GUI application to quickly toggle your Tailscale exit no
   - **Left Click:** Immediately toggles Exit Node ON/OFF.
   - **Right Click:** Opens menu (Show Window, Toggle, Quit).
 
+#### Dynamic Tray Icons
+
+The system tray icons (On/Off) are dynamically generated at runtime using the `Pillow` library to ensure consistent styling and avoid external asset dependencies. These generated icons are stored temporarily in the application's log directory (`~/.local/state/exitnodetoggle/`).
+
 #### Tray Icon Colors
 | Color | Status |
 |-------|--------|
@@ -249,11 +253,22 @@ Look for the device you want to use as exit node and copy its IP (starts with `1
 
 ## Troubleshooting
 
+For any issues, please check the application logs located at `~/.local/state/exitnodetoggle/app.log` (on Linux/macOS) or `%LOCALAPPDATA%\exitnodetoggle\app.log` (on Windows). These logs provide detailed information that can help diagnose problems.
+
 ### Linux (Arch/KDE)
 
 **"Tray icon not responding"**
 - Ensure you have `PyQt5` installed. The app uses native Qt system tray integration for best results on KDE.
 - If using GNOME, ensure you have AppIndicator support enabled (though Qt fallback usually works).
+
+**"Tray icon not showing after packaging (makepkg)"**
+- **Problem:** The packaged application might not display the system tray icon, even though `main_linux.py` works when run directly. This was due to a mismatch in the tray capability check (`main_linux.py` was checking for `gi` (AppIndicator/GTK) while the tray implementation uses `PyQt5`) and PyInstaller not always correctly detecting and bundling `PyQt5` when dynamically imported.
+- **Solution:** Ensure your `PKGBUILD` and `build_linux.sh` explicitly include `PyQt5` using `--hidden-import PyQt5` in the PyInstaller command. The application logic has been updated to check for `PyQt5` directly.
+
+**"Cannot enable exit node after packaging (makepkg)"**
+- **Problem:** After building with `makepkg`, the application could disable the exit node but failed to enable it. This happened because the `exit_node_ip` was missing from the configuration. The `PKGBUILD` was not bundling `config.json` into the executable, leading the app to start with an invalid configuration.
+- **Solution:** Ensure your `PKGBUILD` explicitly bundles `config.json` using `--add-data "config.json:."` in the PyInstaller command. The application will now find the `exit_node_ip` from the bundled `config.json`.
+- **Note:** For persistent configuration, it is recommended to create a `config.json` file in `~/.config/exitnodetoggle/` with your desired `exit_node_ip`. This user-specific file will take precedence over the bundled configuration.
 
 **"Permission Denied"**
 - Ensure your user can run `tailscale` commands (add user to `tailscale` group if applicable, or use `sudo` via `tailscale_exe` wrapper if strictly required, though typically `tailscale set` works for users in the operator group).
