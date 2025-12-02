@@ -229,131 +229,124 @@ def generate_icons(output_dir: Path):
         return None, None
 
 
-# --- 6. Tray Process (Native GTK) --------------------------------------------
+# --- 6. Tray Process (PyQt5 - Native KDE Support) --------------------------
 
 def run_tray_process(msg_queue):
     """
-    Runs the system tray icon in a separate process using pure GTK+AppIndicator.
+    Runs the system tray icon using PyQt5.
+    This provides native integration with KDE Plasma, supporting distinct
+    Left-Click (Trigger) and Right-Click (Context Menu) behaviors.
     """
     setup_logging(TRAY_LOG_FILE, "Tray")
-    logging.info("Tray process initialized.")
+    logging.info("Tray process initialized (PyQt5 mode).")
 
-    # Import GTK
     try:
-        import gi
-        gi.require_version('Gtk', '3.0')
-        from gi.repository import Gtk, GLib
-        
-        APP_INDICATOR = None
-        try:
-            gi.require_version('AppIndicator3', '0.1')
-            from gi.repository import AppIndicator3
-            APP_INDICATOR = AppIndicator3
-            logging.info("Using AppIndicator3")
-        except:
-            try:
-                gi.require_version('AyatanaAppIndicator3', '0.1')
-                from gi.repository import AyatanaAppIndicator3
-                APP_INDICATOR = AyatanaAppIndicator3
-                logging.info("Using AyatanaAppIndicator3")
-            except:
-                logging.error("No AppIndicator library found. Tray cannot start.")
-                return
-    except Exception as e:
-        logging.critical(f"Failed to import GTK/Gi: {e}")
+        from PyQt5.QtWidgets import QApplication, QSystemTrayIcon, QMenu, QAction
+        from PyQt5.QtGui import QIcon
+        from PyQt5.QtCore import QTimer
+    except ImportError:
+        logging.critical("PyQt5 not found. Please install it: pip install PyQt5")
         return
 
     try:
-        # Setup Logic
+        # QApplication is required for QSystemTrayIcon
+        # We pass an empty list or sys.argv
+        app = QApplication(sys.argv)
+        
+        # Prevent closing the app if the tray icon is the only thing "visible"
+        app.setQuitOnLastWindowClosed(False)
+
         config = Config()
         tailscale = TailscaleController(config)
         
-        # Generate Icons
-        icon_on, icon_off = generate_icons(LOG_DIR)
-        if not icon_on:
-            logging.error("Failed to generate icons. Exiting.")
+        # Generate Icons to disk (Qt can load from file paths easily)
+        icon_on_path, icon_off_path = generate_icons(LOG_DIR)
+        if not icon_on_path:
             return
-            
-        logging.info(f"Icons: {icon_on}, {icon_off}")
 
-        # Create Indicator
-        # ID must be unique
-        indicator = APP_INDICATOR.Indicator.new(
-            "tailscale-exit-node-toggle",
-            icon_off,
-            APP_INDICATOR.IndicatorCategory.APPLICATION_STATUS
-        )
-        indicator.set_status(APP_INDICATOR.IndicatorStatus.ACTIVE)
+        # Create Tray Icon
+        tray_icon = QSystemTrayIcon()
+        tray_icon.setIcon(QIcon(icon_off_path))
+        tray_icon.setToolTip("Exit Node: Checking...")
         
-        # Build Menu
-        menu = Gtk.Menu()
+        # --- Actions ---
         
-        item_show = Gtk.MenuItem(label="Show Window")
-        item_show.connect("activate", lambda _: msg_queue.put("show"))
-        menu.append(item_show)
-        
-        item_toggle = Gtk.MenuItem(label="Toggle Exit Node")
-        
-        def on_toggle(_):
-            logging.info("Toggle clicked.")
-            # Run in thread
-            threading.Thread(target=do_toggle, daemon=True).start()
-            
         def do_toggle():
-            # Optimistically toggle based on last known or check?
-            # Let's just toggle based on check
-            active, _ = tailscale.get_status()
-            if active:
+            # Toggle Logic
+            is_on, _ = tailscale.get_status()
+            if is_on:
                 tailscale.disable_exit_node()
             else:
                 tailscale.enable_exit_node()
-            # Poll loop will update icon
-            # Force immediate check
-            GLib.idle_add(update_icon)
+            # Force immediate update
+            update_status()
 
-        item_toggle.connect("activate", on_toggle)
-        menu.append(item_toggle)
-        
-        menu.append(Gtk.SeparatorMenuItem())
-        
-        item_quit = Gtk.MenuItem(label="Quit")
-        def on_quit(_):
-            logging.info("Quit clicked.")
+        def request_show_window():
+            logging.info("Sending SHOW")
+            msg_queue.put("show")
+
+        def request_quit():
+            logging.info("Sending QUIT")
             msg_queue.put("quit")
-            Gtk.main_quit()
-            
-        item_quit.connect("activate", on_quit)
-        menu.append(item_quit)
+            app.quit()
+
+        # --- Context Menu (Right Click) ---
+        menu = QMenu()
         
-        menu.show_all()
-        indicator.set_menu(menu)
+        action_show = QAction("Show Window")
+        action_show.triggered.connect(request_show_window)
+        menu.addAction(action_show)
         
-        # Poll Status
-        def update_icon():
+        action_toggle = QAction("Toggle Exit Node")
+        action_toggle.triggered.connect(lambda: threading.Thread(target=do_toggle, daemon=True).start())
+        menu.addAction(action_toggle)
+        
+        menu.addSeparator()
+        
+        action_quit = QAction("Quit")
+        action_quit.triggered.connect(request_quit)
+        menu.addAction(action_quit)
+        
+        tray_icon.setContextMenu(menu)
+
+        # --- Activation Handler (Left Click) ---
+        def on_activated(reason):
+            if reason == QSystemTrayIcon.Trigger:
+                logging.info("Tray Triggered (Left Click) - Toggling...")
+                threading.Thread(target=do_toggle, daemon=True).start()
+            elif reason == QSystemTrayIcon.Context:
+                logging.info("Tray Context (Right Click) - Menu showing...")
+                # Context menu handled automatically by setContextMenu
+
+        tray_icon.activated.connect(on_activated)
+
+        # --- Polling Loop ---
+        def update_status():
             try:
                 is_active, _ = tailscale.get_status()
                 if is_active:
-                    indicator.set_icon_full(icon_on, "Tailscale ON")
+                    tray_icon.setIcon(QIcon(icon_on_path))
+                    tray_icon.setToolTip("Exit Node: ON")
                 else:
-                    indicator.set_icon_full(icon_off, "Tailscale OFF")
+                    tray_icon.setIcon(QIcon(icon_off_path))
+                    tray_icon.setToolTip("Exit Node: OFF")
             except Exception as e:
                 logging.error(f"Poll error: {e}")
-            return True # Keep running
 
-        # Poll every 5 seconds
-        GLib.timeout_add_seconds(5, update_icon)
-        # Run once immediately
-        GLib.idle_add(update_icon)
+        timer = QTimer()
+        timer.timeout.connect(update_status)
+        timer.start(5000) # 5 seconds
         
-        # Handle Ctrl+C
-        signal.signal(signal.SIGINT, lambda *args: Gtk.main_quit())
+        # Initial check
+        QTimer.singleShot(100, update_status)
 
-        logging.info("Entering GTK main loop...")
-        Gtk.main()
-        logging.info("GTK main loop exited.")
+        tray_icon.show()
+        
+        logging.info("Entering Qt Main Loop...")
+        sys.exit(app.exec_())
 
     except Exception as e:
-        logging.critical(f"Tray crashed: {e}")
+        logging.critical(f"Qt Tray crashed: {e}")
         import traceback
         logging.critical(traceback.format_exc())
 
